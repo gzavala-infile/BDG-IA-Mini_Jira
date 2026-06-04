@@ -1,0 +1,65 @@
+%% ============================================================
+%% SEQUENCE DIAGRAM — Mover ticket de "Por hacer" a "Listo"
+%% ============================================================
+
+sequenceDiagram
+    actor Usuario
+    participant SPA as SPA React
+    participant API as API REST
+    participant DB as PostgreSQL
+    participant SMTP as Servidor SMTP
+
+    Note over Usuario,SMTP: Precondición — ticket #42: estado "Por hacer", version=5, asignado_a=userB
+
+    Usuario->>SPA: Arrastra tarjeta a columna "Listo"
+    SPA->>SPA: Optimistic update: mueve tarjeta en UI sin esperar respuesta
+
+    Note over SPA,API: PATCH /tickets/42 · Body: { estado:"Listo", version:5 } · Header: Bearer JWT
+    SPA->>API: PATCH /tickets/42
+
+    API->>API: Verifica JWT: firma y expiración
+
+    alt JWT inválido o expirado
+        API-->>SPA: 401 Unauthorized
+        SPA->>SPA: Revierte optimistic update
+        SPA-->>Usuario: Redirige a /login
+
+    else JWT válido — extrae userId y rol
+
+        API->>DB: SELECT creado_por, asignado_a, version, archived_at FROM tickets WHERE id=42
+        DB-->>API: { creado_por:userA, asignado_a:userB, version:5, archived_at:null }
+
+        API->>API: Evalúa permiso: userId == creado_por OR rol == "Admin"
+
+        alt Sin permiso (usuario ajeno al ticket)
+            API-->>SPA: 403 Forbidden
+            SPA->>SPA: Revierte optimistic update
+            SPA-->>Usuario: Muestra error de permisos
+
+        else Permiso concedido
+
+            Note over API,DB: UPDATE tickets SET estado='Listo', version=version+1, fecha_actualización=NOW() WHERE id=42 AND version=5
+            API->>DB: UPDATE tickets WHERE id=42 AND version=5
+
+            alt Versión no coincide — edición concurrente (rowsAffected=0)
+                DB-->>API: 0 filas actualizadas
+                API-->>SPA: 409 Conflict { error:"version_conflict" }
+                SPA->>SPA: Revierte optimistic update
+                SPA-->>Usuario: "Otro usuario modificó este ticket mientras lo editabas. Recarga para ver los cambios."
+
+            else Versión coincide (rowsAffected=1)
+                DB-->>API: 1 fila actualizada
+
+                API->>DB: SELECT email FROM users WHERE id=userB AND activo=true
+                DB-->>API: { email:"userb@empresa.com" }
+
+                API--)SMTP: sendMail({ to:"userb@empresa.com", asunto:"Estado actualizado a Listo" })
+                Note right of SMTP: Disparo asíncrono — no bloquea la respuesta HTTP
+
+                API-->>SPA: 200 OK { id:42, estado:"Listo", version:6, fecha_actualización }
+                SPA->>SPA: Confirma en Zustand store + invalida caché TanStack Query
+                SPA-->>Usuario: Tarjeta confirmada en columna "Listo"
+
+            end
+        end
+    end

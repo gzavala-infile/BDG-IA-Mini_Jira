@@ -1,0 +1,70 @@
+%% ============================================================
+%% DIAGRAMA ENTIDAD-RELACIÓN — Mini Jira v1.0
+%% ============================================================
+
+erDiagram
+
+    USUARIO {
+        int     id          PK
+        string  nombre
+        string  email       UK
+        string  password_hash
+        enum    rol         "Admin | Usuario"
+        boolean activo      "false = no puede iniciar sesion"
+        timestamp creado_en
+        timestamp actualizado_en
+    }
+
+    TICKET {
+        int       id             PK
+        string    titulo         "max 120 chars"
+        text      descripcion    "markdown, nullable"
+        enum      estado         "Por_hacer | En_progreso | Bloqueado | Listo"
+        enum      prioridad      "Alta | Media | Baja"
+        int       version        "bloqueo optimista (409 si difiere)"
+        timestamp archived_at   "null = activo; not null = archivado"
+        timestamp creado_en
+        timestamp actualizado_en
+        int       creado_por_id  FK
+        int       asignado_a_id  FK "nullable"
+    }
+
+    COMENTARIO {
+        int       id         PK
+        text      texto      "texto plano, sin markdown"
+        timestamp creado_en
+        int       ticket_id  FK
+        int       autor_id   FK
+    }
+
+    ETIQUETA {
+        int    id     PK
+        string nombre UK "string libre, case-insensitive"
+    }
+
+    TICKET_ETIQUETA {
+        int ticket_id   PK "FK -> TICKET"
+        int etiqueta_id PK "FK -> ETIQUETA, max 5 por ticket"
+    }
+
+    %% Un USUARIO crea cero o muchos TICKETs.
+    %% Cada TICKET tiene exactamente un creador.
+    USUARIO ||--o{ TICKET : "crea"
+
+    %% Un USUARIO puede estar asignado a cero o muchos TICKETs.
+    %% Cada TICKET tiene cero o un asignado (opcional en creacion).
+    USUARIO |o--o{ TICKET : "asignado a"
+
+    %% Un TICKET tiene cero o muchos COMENTARIOs.
+    %% Cada COMENTARIO pertenece a exactamente un TICKET.
+    TICKET ||--o{ COMENTARIO : "contiene"
+
+    %% Un USUARIO escribe cero o muchos COMENTARIOs.
+    %% Cada COMENTARIO tiene exactamente un autor.
+    USUARIO ||--o{ COMENTARIO : "escribe"
+
+    %% Relacion N:M entre TICKET y ETIQUETA via tabla puente.
+    %% Un TICKET tiene entre 0 y 5 ETIQUETAs.
+    %% Una ETIQUETA puede estar en cero o muchos TICKETs.
+    TICKET   ||--o{ TICKET_ETIQUETA : "categorizado en"
+    ETIQUETA ||--o{ TICKET_ETIQUETA : "usada en"

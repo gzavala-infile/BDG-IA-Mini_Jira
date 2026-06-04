@@ -1,0 +1,26 @@
+%% ============================================================
+%% C4 CONTAINER DIAGRAM — Mini Jira v1.0
+%% ============================================================
+
+C4Container
+    title Diagrama de Contenedores — Mini Jira v1.0
+
+    Person(usuario, "Usuario", "Miembro del equipo. Crea y gestiona sus propios tickets, añade comentarios y consulta el tablero.")
+    Person(admin, "Admin", "Miembro del equipo. Gestiona usuarios, reasigna tickets y restaura archivados.")
+
+    System_Boundary(minijira, "Mini Jira") {
+
+        Container(spa, "Single Page Application", "React 18 · Tailwind CSS · shadcn/ui · Zustand · TanStack Query · Recharts", "Renderiza el tablero Kanban (4 columnas), formularios de ticket, filtros, búsqueda de texto libre, dashboard de métricas y gestión de usuarios. Detecta y muestra avisos de conflicto por bloqueo optimista.")
+
+        Container(api, "API REST", "Node.js 20 LTS · Express.js · Prisma ORM · JWT + bcrypt · Nodemailer", "Expone endpoints REST para auth, tickets, comentarios, usuarios y métricas. Aplica autorización por rol en cada endpoint. Implementa bloqueo optimista via campo version. Dispara notificaciones por email ante eventos de asignación, comentario, mención y cambio de estado.")
+
+        ContainerDb(db, "Base de Datos", "PostgreSQL 16", "Almacena: usuarios (rol, estado activo/inactivo), tickets (version, archived_at, campos de negocio), comentarios y etiquetas. Fuente de verdad para métricas del dashboard.")
+    }
+
+    System_Ext(smtp, "Servidor SMTP", "Mailtrap (dev) · SMTP propio (prod). Entrega emails de notificación. Sin dependencias de servicios de pago en V1.")
+
+    Rel(usuario, spa, "Usa desde el navegador", "HTTPS")
+    Rel(admin, spa, "Usa desde el navegador", "HTTPS")
+    Rel(spa, api, "Consume endpoints REST", "JSON / HTTPS")
+    Rel(api, db, "Lee y escribe", "Prisma ORM · TCP 5432")
+    Rel(api, smtp, "Envía notificaciones", "SMTP")
