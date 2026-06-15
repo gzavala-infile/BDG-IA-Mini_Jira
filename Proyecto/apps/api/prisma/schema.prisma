@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RolUsuario {
+  admin
+  usuario
+}
+
+enum EstadoTicket {
+  por_hacer
+  en_progreso
+  bloqueado
+  listo
+}
+
+enum PrioridadTicket {
+  alta
+  media
+  baja
+}
+
+model Usuario {
+  id             String    @id @default(uuid())
+  nombre         String
+  email          String    @unique
+  password_hash  String
+  rol            RolUsuario @default(usuario)
+  activo         Boolean    @default(true)
+  creado_en      DateTime   @default(now())
+  actualizado_en DateTime   @updatedAt
+
+  tickets_creados  Ticket[]    @relation("creador")
+  tickets_asignados Ticket[]   @relation("asignado")
+  comentarios      Comentario[]
+  refresh_tokens   RefreshToken[]
+
+  @@map("usuarios")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  usuario_id String
+  usuario    Usuario  @relation(fields: [usuario_id], references: [id], onDelete: Cascade)
+  expires_at DateTime
+  creado_en  DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+model Ticket {
+  id             Int              @id @default(autoincrement())
+  titulo         String
+  descripcion    String?
+  estado         EstadoTicket     @default(por_hacer)
+  prioridad      PrioridadTicket  @default(media)
+  version        Int              @default(1)
+  archived_at    DateTime?
+  creado_en      DateTime         @default(now())
+  actualizado_en DateTime         @updatedAt
+  creado_por_id  String
+  asignado_a_id  String?
+
+  creado_por  Usuario      @relation("creador", fields: [creado_por_id], references: [id])
+  asignado_a  Usuario?     @relation("asignado", fields: [asignado_a_id], references: [id])
+  comentarios Comentario[]
+  etiquetas   TicketEtiqueta[]
+
+  @@map("tickets")
+}
+
+model Comentario {
+  id        Int      @id @default(autoincrement())
+  texto     String
+  creado_en DateTime @default(now())
+  ticket_id Int
+  autor_id  String
+
+  ticket Ticket  @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  autor  Usuario @relation(fields: [autor_id], references: [id])
+
+  @@map("comentarios")
+}
+
+model Etiqueta {
+  id      Int    @id @default(autoincrement())
+  nombre  String @unique
+
+  tickets TicketEtiqueta[]
+
+  @@map("etiquetas")
+}
+
+model TicketEtiqueta {
+  ticket_id   Int
+  etiqueta_id Int
+
+  ticket   Ticket   @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  etiqueta Etiqueta @relation(fields: [etiqueta_id], references: [id], onDelete: Cascade)
+
+  @@id([ticket_id, etiqueta_id])
+  @@map("ticket_etiquetas")
+}

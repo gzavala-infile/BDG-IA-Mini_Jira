@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-sans;
+  }
+
+  h1, h2, h3 {
+    @apply font-heading;
+  }
+}
+
+@layer utilities {
+  .kanban-column-width {
+    min-width: 280px;
+    max-width: 320px;
+    width: 300px;
+  }
+}
