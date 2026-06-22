@@ -1,0 +1,532 @@
+# database-schema.yaml — Mini Jira v1.0
+# Fuente de verdad: docs/specs.md · backend/api-contract.md
+# Motor: PostgreSQL 16
+
+meta:
+  version: "1.0"
+  date: "2026-06-17"
+  encoding: UTF-8
+  collation: en_US.UTF-8
+
+# ──────────────────────────────────────────────
+# ENUMS
+# ──────────────────────────────────────────────
+enums:
+
+  rol_usuario:
+    values: [admin, usuario]
+    notes: >
+      Solo dos roles en V1. No hay roles intermedios ni permisos granulares
+      a nivel de campo; la lógica de permisos vive en el middleware del API.
+
+  estado_ticket:
+    values: [por_hacer, en_progreso, bloqueado, listo]
+    notes: >
+      Cuatro estados fijos. Cualquier transición entre estados está permitida
+      (sin flujo forzado en V1). "bloqueado" reemplaza "Review" solicitado
+      originalmente por Marcos.
+
+  prioridad_ticket:
+    values: [alta, media, baja]
+    notes: Valor por defecto al crear un ticket es "media".
+
+# ──────────────────────────────────────────────
+# TABLAS
+# ──────────────────────────────────────────────
+tables:
+
+  # ── 1. USUARIOS ────────────────────────────
+  usuarios:
+    description: >
+      Representa a cada miembro del equipo interno (máx. ~10 personas en V1).
+      Los usuarios nunca se eliminan físicamente; se desactivan con activo = false.
+    columns:
+      id:
+        type: UUID
+        constraints: [PRIMARY KEY, NOT NULL, DEFAULT gen_random_uuid()]
+        notes: UUID v4 generado en base de datos.
+      nombre:
+        type: VARCHAR(100)
+        constraints: [NOT NULL]
+        validation: "mínimo 2 chars, máximo 100 chars"
+      email:
+        type: VARCHAR(255)
+        constraints: [NOT NULL, UNIQUE]
+        notes: >
+          Normalizar a lowercase antes de persistir.
+          Unicidad garantizada a nivel de BD, no solo de aplicación.
+      password_hash:
+        type: VARCHAR(255)
+        constraints: [NOT NULL]
+        notes: >
+          Hash bcrypt (cost factor 12 recomendado).
+          NUNCA se devuelve en ninguna respuesta del API.
+      rol:
+        type: rol_usuario  # enum
+        constraints: [NOT NULL, DEFAULT 'usuario']
+      activo:
+        type: BOOLEAN
+        constraints: [NOT NULL, DEFAULT true]
+        notes: >
+          false = usuario desactivado. No puede iniciar sesión.
+          Sus tickets asignados permanecen sin reasignación automática;
+          el frontend muestra "(inactivo)" en la tarjeta del tablero.
+      creado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+        notes: Inmutable una vez creado.
+      actualizado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+        notes: Actualizar con trigger ON UPDATE.
+
+    indexes:
+      - name: usuarios_email_idx
+        columns: [email]
+        type: UNIQUE
+        notes: Lookup de login; ya cubierto por la constraint UNIQUE, se lista para claridad.
+      - name: usuarios_activo_idx
+        columns: [activo]
+        type: BTREE
+        notes: Filtro frecuente en selector de asignación (solo activo = true).
+
+    business_rules:
+      - "Soft-delete únicamente: nunca DELETE físico."
+      - "Un usuario inactivo no puede recibir asignaciones nuevas (validar en API, error inactive_user)."
+      - "El campo email debe ser único en todo el sistema; error conflict (409) si ya existe."
+      - "password_hash nunca se serializa en ninguna respuesta del API."
+
+  # ── 2. REFRESH TOKENS ─────────────────────
+  refresh_tokens:
+    description: >
+      Almacena los refresh tokens emitidos por POST /api/auth/login.
+      Permite invalidación explícita en logout y revocación por inactividad.
+    columns:
+      id:
+        type: BIGSERIAL
+        constraints: [PRIMARY KEY]
+      usuario_id:
+        type: UUID
+        constraints: [NOT NULL, REFERENCES usuarios(id) ON DELETE CASCADE]
+      token_hash:
+        type: VARCHAR(255)
+        constraints: [NOT NULL, UNIQUE]
+        notes: >
+          Hash SHA-256 del refresh token JWT. No se almacena el token en texto claro.
+      revocado:
+        type: BOOLEAN
+        constraints: [NOT NULL, DEFAULT false]
+      expira_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL]
+        notes: >
+          Tiempo de expiración del refresh token (p.ej. 7 días desde emisión).
+          El servidor rechaza tokens expirados aunque revocado = false.
+      creado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+
+    foreign_keys:
+      - column: usuario_id
+        references: usuarios(id)
+        on_delete: CASCADE
+        notes: Si el usuario se elimina (improbable; soft-delete preferido), se limpian sus tokens.
+
+    indexes:
+      - name: refresh_tokens_token_hash_idx
+        columns: [token_hash]
+        type: UNIQUE
+        notes: Lookup en POST /api/auth/refresh y POST /api/auth/logout.
+      - name: refresh_tokens_usuario_id_idx
+        columns: [usuario_id]
+        type: BTREE
+        notes: Listar / revocar todos los tokens de un usuario al desactivarlo.
+
+    business_rules:
+      - "POST /api/auth/logout marca revocado = true; no elimina el registro."
+      - "Una tarea de limpieza (cron) puede eliminar registros con expira_en < now() para evitar crecimiento indefinido."
+      - "Si el usuario está inactivo, POST /api/auth/refresh debe rechazar con 401 aunque el token sea válido."
+
+  # ── 3. TICKETS ────────────────────────────
+  tickets:
+    description: >
+      Entidad central del sistema. Representa una unidad de trabajo del equipo.
+      El "archivado" es un soft-delete lógico (archived_at != null).
+    columns:
+      id:
+        type: BIGSERIAL
+        constraints: [PRIMARY KEY]
+        notes: Entero autoincremental expuesto como número en el API.
+      titulo:
+        type: VARCHAR(120)
+        constraints: [NOT NULL]
+        validation: "1–120 chars; requerido."
+      descripcion:
+        type: TEXT
+        constraints: [NULLABLE]
+        notes: >
+          Soporte de Markdown. Null si no se proporciona.
+          Sin límite de longitud definido en specs; se puede añadir CHECK en V2.
+      estado:
+        type: estado_ticket  # enum
+        constraints: [NOT NULL, DEFAULT 'por_hacer']
+        notes: El estado inicial siempre es 'por_hacer'.
+      prioridad:
+        type: prioridad_ticket  # enum
+        constraints: [NOT NULL, DEFAULT 'media']
+      version:
+        type: INTEGER
+        constraints: [NOT NULL, DEFAULT 1]
+        notes: >
+          Bloqueo optimista. Se incrementa en 1 en cada PATCH exitoso.
+          El cliente debe enviar la versión actual en cada PATCH;
+          si no coincide con la BD se devuelve 409 version_conflict.
+      archived_at:
+        type: TIMESTAMPTZ
+        constraints: [NULLABLE, DEFAULT NULL]
+        notes: >
+          NULL = ticket activo. Valor = fecha de archivado (soft-delete lógico).
+          Una vez archivado el ticket es solo lectura. Solo Admin puede restaurarlo
+          (PATCH /api/tickets/:id/restore → archived_at = NULL).
+      creado_por_id:
+        type: UUID
+        constraints: [NOT NULL, REFERENCES usuarios(id)]
+        notes: >
+          Inmutable tras la creación. El creador puede editar y archivar
+          su propio ticket independientemente del rol.
+      asignado_a_id:
+        type: UUID
+        constraints: [NULLABLE, REFERENCES usuarios(id)]
+        notes: >
+          Solo Admin puede reasignar. Debe apuntar a un usuario con activo = true
+          en el momento de la asignación (error inactive_user si no).
+          Si el usuario se desactiva después, el campo permanece; el frontend
+          muestra "(inactivo)" en la tarjeta.
+      creado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+        notes: Inmutable. Base para filtros fecha_desde / fecha_hasta en GET /api/tickets.
+      actualizado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+        notes: Actualizar con trigger ON UPDATE en cada PATCH.
+
+    foreign_keys:
+      - column: creado_por_id
+        references: usuarios(id)
+        on_delete: RESTRICT
+        notes: No permitir eliminar un usuario que tiene tickets creados.
+      - column: asignado_a_id
+        references: usuarios(id)
+        on_delete: SET NULL
+        notes: Si el usuario fuera eliminado físicamente (improbable), desasignar.
+
+    indexes:
+      - name: tickets_archived_at_idx
+        columns: [archived_at]
+        type: BTREE
+        notes: >
+          Filtro más frecuente: WHERE archived_at IS NULL (tablero activo)
+          o IS NOT NULL (vista de archivados). Índice parcial recomendado:
+          CREATE INDEX ... WHERE archived_at IS NULL
+      - name: tickets_estado_idx
+        columns: [estado]
+        type: BTREE
+        notes: Filtro por estado en tablero Kanban y distribución de métricas.
+      - name: tickets_prioridad_idx
+        columns: [prioridad]
+        type: BTREE
+        notes: Filtro por prioridad.
+      - name: tickets_asignado_a_id_idx
+        columns: [asignado_a_id]
+        type: BTREE
+        notes: Filtro por usuario asignado en tablero y métricas por usuario.
+      - name: tickets_creado_por_id_idx
+        columns: [creado_por_id]
+        type: BTREE
+        notes: Verificación de permisos (¿es el creador?).
+      - name: tickets_creado_en_idx
+        columns: [creado_en DESC]
+        type: BTREE
+        notes: Ordenación por defecto (creado_en DESC) y filtros de rango de fechas.
+      - name: tickets_texto_busqueda_idx
+        columns: ["to_tsvector('spanish', titulo || ' ' || COALESCE(descripcion, ''))"]
+        type: GIN
+        notes: >
+          Índice de búsqueda de texto completo para el parámetro ?q= en GET /api/tickets.
+          Alternativa simple: ILIKE '%q%' sobre titulo y descripcion (sin índice GIN),
+          aceptable para equipos de ~10 personas en V1.
+
+    business_rules:
+      - "estado inicial siempre 'por_hacer'; no configurable en POST /api/tickets."
+      - "version se incrementa en 1 por cada PATCH exitoso. No es editable directamente."
+      - "Si version en el PATCH != version en BD → 409 version_conflict; no se persiste ningún cambio."
+      - "archived_at != null → todos los campos son solo lectura; ningún PATCH está permitido salvo /restore."
+      - "Tickets archivados excluidos de métricas del dashboard y del tablero principal."
+      - "El archivado requiere confirmación en UI (modal); la operación es irreversible desde el cliente."
+      - "Solo Admin puede restaurar (PATCH /restore → archived_at = NULL)."
+      - "Reasignación (asignado_a_id) solo permitida para rol Admin."
+
+  # ── 4. ETIQUETAS ──────────────────────────
+  etiquetas:
+    description: >
+      Catálogo global de etiquetas (tags). Se crean on-demand al asignarlas
+      a un ticket si no existen. Siempre en minúsculas.
+    columns:
+      id:
+        type: BIGSERIAL
+        constraints: [PRIMARY KEY]
+      nombre:
+        type: VARCHAR(50)
+        constraints: [NOT NULL, UNIQUE]
+        notes: >
+          Siempre normalizado a lowercase antes de insertar.
+          La unicidad es sobre el nombre en minúsculas.
+          Validación: 1–50 chars.
+
+    indexes:
+      - name: etiquetas_nombre_idx
+        columns: [nombre]
+        type: UNIQUE
+        notes: Lookup y deduplicación al asignar etiquetas.
+
+    business_rules:
+      - "Crear la etiqueta si no existe (upsert por nombre) al asociarla a un ticket."
+      - "Máximo 5 etiquetas por ticket (validado en la tabla pivot ticket_etiquetas)."
+      - "Los nombres se normalizan a lowercase en el API antes de persistir."
+
+  # ── 5. TICKET_ETIQUETAS (pivot) ──────────
+  ticket_etiquetas:
+    description: >
+      Tabla de unión N:M entre tickets y etiquetas.
+      Un PATCH /api/tickets/:id con 'etiquetas' reemplaza el set completo
+      (DELETE + INSERT, no merge incremental).
+    columns:
+      ticket_id:
+        type: BIGINT
+        constraints: [NOT NULL, REFERENCES tickets(id) ON DELETE CASCADE]
+      etiqueta_id:
+        type: BIGINT
+        constraints: [NOT NULL, REFERENCES etiquetas(id) ON DELETE CASCADE]
+
+    primary_key: [ticket_id, etiqueta_id]
+
+    foreign_keys:
+      - column: ticket_id
+        references: tickets(id)
+        on_delete: CASCADE
+        notes: Al archivar/restaurar no se tocan las etiquetas; al eliminar físicamente sí.
+      - column: etiqueta_id
+        references: etiquetas(id)
+        on_delete: CASCADE
+        notes: Si una etiqueta se borrara del catálogo, se eliminan las asociaciones.
+
+    indexes:
+      - name: ticket_etiquetas_pk
+        columns: [ticket_id, etiqueta_id]
+        type: PRIMARY KEY
+      - name: ticket_etiquetas_etiqueta_id_idx
+        columns: [etiqueta_id]
+        type: BTREE
+        notes: Filtro por etiqueta en GET /api/tickets?etiqueta=xxx.
+
+    business_rules:
+      - "Máximo 5 filas por ticket_id. Validar en la capa de servicio antes del INSERT."
+      - "En PATCH, borrar todas las filas del ticket y reinsertar el nuevo set en una transacción."
+      - "El filtro ?etiqueta= hace exact match sobre etiquetas.nombre (ya en lowercase)."
+
+  # ── 6. COMENTARIOS ────────────────────────
+  comentarios:
+    description: >
+      Comentarios de texto plano asociados a un ticket.
+      No se editan; solo se crean y eliminan (borrado físico).
+    columns:
+      id:
+        type: BIGSERIAL
+        constraints: [PRIMARY KEY]
+      texto:
+        type: TEXT
+        constraints: [NOT NULL]
+        validation: "1–5000 chars; validado en el API."
+      ticket_id:
+        type: BIGINT
+        constraints: [NOT NULL, REFERENCES tickets(id) ON DELETE CASCADE]
+      autor_id:
+        type: UUID
+        constraints: [NOT NULL, REFERENCES usuarios(id)]
+      creado_en:
+        type: TIMESTAMPTZ
+        constraints: [NOT NULL, DEFAULT now()]
+        notes: Inmutable. Orden de presentación ASC.
+
+    foreign_keys:
+      - column: ticket_id
+        references: tickets(id)
+        on_delete: CASCADE
+        notes: Si el ticket se elimina físicamente, sus comentarios también se borran.
+      - column: autor_id
+        references: usuarios(id)
+        on_delete: RESTRICT
+        notes: No permitir eliminar un usuario que tiene comentarios.
+
+    indexes:
+      - name: comentarios_ticket_id_creado_en_idx
+        columns: [ticket_id, creado_en ASC]
+        type: BTREE
+        notes: >
+          Query principal: todos los comentarios de un ticket ordenados por fecha.
+          Usado en GET /api/tickets/:id y GET /api/tickets/:ticketId/comments.
+      - name: comentarios_autor_id_idx
+        columns: [autor_id]
+        type: BTREE
+        notes: Verificación de permisos (¿es el autor?) en DELETE /comments/:commentId.
+
+    business_rules:
+      - "No se permite comentar en tickets archivados (archived_at != null → 403 archived)."
+      - "Un usuario puede borrar solo sus propios comentarios; Admin puede borrar cualquiera."
+      - "No hay edición de comentarios en V1. El usuario borra y reescribe."
+      - "Borrado es físico (DELETE), no lógico."
+      - "Trigger de email al creador del ticket cuando alguien comenta (specs §2.6)."
+
+# ──────────────────────────────────────────────
+# TRIGGERS SUGERIDOS
+# ──────────────────────────────────────────────
+triggers:
+
+  - name: set_actualizado_en_usuarios
+    on_table: usuarios
+    event: BEFORE UPDATE
+    action: SET actualizado_en = now()
+
+  - name: set_actualizado_en_tickets
+    on_table: tickets
+    event: BEFORE UPDATE
+    action: SET actualizado_en = now()
+    notes: >
+      Este trigger NO incrementa version; eso lo hace la capa de servicio
+      junto con la verificación de bloqueo optimista.
+
+# ──────────────────────────────────────────────
+# NOTAS GENERALES DE DISEÑO
+# ──────────────────────────────────────────────
+design_notes:
+
+  soft_delete:
+    tables_affected: [usuarios, tickets]
+    strategy: >
+      usuarios → columna activo (boolean).
+      tickets  → columna archived_at (timestamptz nullable).
+      Ninguna tabla usa una columna deleted_at genérica para evitar ambigüedad
+      semántica; cada entidad tiene su propio mecanismo según la lógica de negocio.
+
+  optimistic_locking:
+    table: tickets
+    column: version
+    flow: >
+      1. Cliente recibe ticket con version = N.
+      2. Cliente envía PATCH con { version: N, ...cambios }.
+      3. Servidor ejecuta:
+           UPDATE tickets SET ..., version = N+1
+           WHERE id = :id AND version = N
+      4. Si rows_affected = 0 → otro proceso ya actualizó → 409 version_conflict.
+      5. Si rows_affected = 1 → éxito; se devuelve el ticket con version = N+1.
+
+  token_strategy:
+    access_token:
+      storage: En memoria (Zustand) — nunca en localStorage ni cookies.
+      ttl: "1 hora (configurable por variable de entorno)"
+    refresh_token:
+      storage: localStorage en el cliente; hash en la tabla refresh_tokens en BD.
+      ttl: "7 días (configurable)"
+      invalidation: >
+        POST /api/auth/logout marca revocado = true.
+        Si usuario.activo = false, cualquier intento de refresh devuelve 401.
+
+  email_notifications:
+    notes: >
+      La lógica de envío de emails (Nodemailer) se dispara desde la capa
+      de servicio del API, no desde triggers de BD.
+      Eventos: asignación, comentario nuevo, cambio de estado en ticket asignado,
+      mención con @usuario en comentario.
+      No hay tabla de queue en V1; si el envío falla se registra en logs
+      (sin reintentos en V1).
+
+  metrics_query_hints:
+    notes: >
+      GET /api/metrics agrega datos en tiempo real (no hay tabla de resumen
+      pre-calculada en V1 dado el tamaño del equipo ~10 personas).
+      Queries principales:
+        - tickets_creados: COUNT WHERE creado_en IN [mes, anio] AND archived_at IS NULL
+        - tickets_listos:  COUNT WHERE estado = 'listo' AND creado_en IN [mes, anio] AND archived_at IS NULL
+        - distribucion_por_estado: COUNT(*) GROUP BY estado WHERE archived_at IS NULL
+        - listos_por_usuario: COUNT(*) GROUP BY asignado_a_id WHERE estado='listo'
+                              AND creado_en IN [mes, anio] AND archived_at IS NULL
+
+  out_of_scope_v1:
+    - "Tabla de subtareas / tickets anidados"
+    - "Tabla de adjuntos / archivos"
+    - "Tabla de preferencias de notificación por usuario"
+    - "Múltiples proyectos / tableros"
+    - "Historial de cambios de estado (audit log)"
+    - "Tabla de queue de emails (Nodemailer directo en V1)"
+
+# ──────────────────────────────────────────────
+# RESUMEN DE RELACIONES
+# ──────────────────────────────────────────────
+relationships:
+
+  diagram: |
+    usuarios (UUID PK)
+      │
+      ├──< refresh_tokens.usuario_id       1:N  ON DELETE CASCADE
+      ├──< tickets.creado_por_id           1:N  ON DELETE RESTRICT
+      ├──< tickets.asignado_a_id           1:N  ON DELETE SET NULL
+      └──< comentarios.autor_id            1:N  ON DELETE RESTRICT
+
+    tickets (BIGSERIAL PK)
+      │
+      ├──< ticket_etiquetas.ticket_id      1:N  ON DELETE CASCADE
+      └──< comentarios.ticket_id           1:N  ON DELETE CASCADE
+
+    etiquetas (BIGSERIAL PK)
+      │
+      └──< ticket_etiquetas.etiqueta_id    1:N  ON DELETE CASCADE
+
+    ticket_etiquetas
+      PK compuesta: (ticket_id, etiqueta_id)  →  N:M entre tickets y etiquetas
+
+  foreign_keys_summary:
+    - fk: refresh_tokens.usuario_id → usuarios.id
+      cardinality: N:1
+      on_delete: CASCADE
+      reason: Los tokens pierden validez si el usuario desaparece.
+
+    - fk: tickets.creado_por_id → usuarios.id
+      cardinality: N:1
+      on_delete: RESTRICT
+      reason: No se puede eliminar un usuario que tenga tickets creados; usar soft-delete (activo=false).
+
+    - fk: tickets.asignado_a_id → usuarios.id
+      cardinality: N:1
+      on_delete: SET NULL
+      reason: Si el usuario es eliminado físicamente, el ticket queda sin asignar en lugar de bloquearse.
+
+    - fk: ticket_etiquetas.ticket_id → tickets.id
+      cardinality: N:1
+      on_delete: CASCADE
+      reason: Las asociaciones de etiquetas mueren con el ticket.
+
+    - fk: ticket_etiquetas.etiqueta_id → etiquetas.id
+      cardinality: N:1
+      on_delete: CASCADE
+      reason: Si una etiqueta es purgada del catálogo, se limpian todas sus asociaciones.
+
+    - fk: comentarios.ticket_id → tickets.id
+      cardinality: N:1
+      on_delete: CASCADE
+      reason: Los comentarios son dependientes del ticket; sin ticket no tienen sentido.
+
+    - fk: comentarios.autor_id → usuarios.id
+      cardinality: N:1
+      on_delete: RESTRICT
+      reason: No se puede eliminar un usuario que tenga comentarios; usar soft-delete (activo=false).

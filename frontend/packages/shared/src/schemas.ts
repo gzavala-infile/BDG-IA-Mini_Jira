@@ -46,6 +46,26 @@ export const UserUpdateSchema = z.object({
   activo: z.boolean().optional(),
 });
 
+export const TicketLockSchema = z.object({
+  ticket_id: z.number().int(),
+  locked_by: z.string().uuid(),
+  locked_at: z.string(),
+  expires_at: z.string(),
+});
+
+export const AuditLogEntrySchema = z.object({
+  id: z.number().int(),
+  ticket_id: z.number().int(),
+  usuario_id: z.string().uuid(),
+  campo: z.string(),
+  valor_anterior: z.string().nullable(),
+  valor_nuevo: z.string(),
+  creado_en: z.string(),
+});
+
+export type TicketLockInput = z.infer<typeof TicketLockSchema>;
+export type AuditLogEntry = z.infer<typeof AuditLogEntrySchema>;
+
 export type LoginInput = z.infer<typeof LoginSchema>;
 export type TicketCreateInput = z.infer<typeof TicketCreateSchema>;
 export type TicketUpdateInput = z.infer<typeof TicketUpdateSchema>;
