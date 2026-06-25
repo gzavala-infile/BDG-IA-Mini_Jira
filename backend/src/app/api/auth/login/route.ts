@@ -8,7 +8,30 @@ import type { UsuarioRow } from '@/lib/db.types'
 
 export const runtime = 'nodejs'
 
+const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+const WINDOW_MS = 15 * 60 * 1000
+const MAX_ATTEMPTS = 10
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const entry = loginAttempts.get(ip)
+  if (!entry || entry.resetAt < now) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + WINDOW_MS })
+    return true
+  }
+  if (entry.count >= MAX_ATTEMPTS) return false
+  entry.count++
+  return true
+}
+
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  if (!checkRateLimit(ip)) {
+    return NextResponse.json(
+      { error: 'rate_limited', message: 'Demasiados intentos. Espera 15 minutos.' },
+      { status: 429, headers: { 'Retry-After': '900' } },
+    )
+  }
   let body: unknown
   try {
     body = await req.json()

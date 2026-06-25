@@ -41,7 +41,10 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await query
-  if (error) return errResponse('validation', error.message)
+  if (error) {
+    console.error('[supabase error]', error.message)
+    return errResponse('validation', 'Error al procesar la solicitud')
+  }
 
   let rows = (data ?? []) as TicketWithRelations[]
 
@@ -103,7 +106,8 @@ export async function POST(req: NextRequest) {
     .single<{ id: number }>()
 
   if (insertErr || !newTicket) {
-    return errResponse('validation', insertErr?.message ?? 'Error al crear ticket')
+    if (insertErr) console.error('[supabase error]', insertErr.message)
+    return errResponse('validation', 'Error al crear ticket')
   }
 
   // Manejar etiquetas

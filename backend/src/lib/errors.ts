@@ -11,6 +11,7 @@ type ApiErrorCode =
   | 'version_conflict'
   | 'inactive_user'
   | 'locked'
+  | 'rate_limited'
 
 const HTTP_STATUS: Record<ApiErrorCode, number> = {
   validation: 400,
@@ -23,6 +24,7 @@ const HTTP_STATUS: Record<ApiErrorCode, number> = {
   version_conflict: 409,
   inactive_user: 422,
   locked: 409,
+  rate_limited: 429,
 }
 
 export function errResponse(code: ApiErrorCode, message: unknown) {

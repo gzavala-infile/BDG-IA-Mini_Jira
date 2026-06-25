@@ -3,12 +3,15 @@ import { supabase } from '@/lib/supabase'
 import { errResponse } from '@/lib/errors'
 import { getAuth } from '@/lib/auth-guard'
 import { hashToken } from '@/lib/jwt'
+import { revokeToken } from '@/lib/token-blocklist'
 
 export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
   const auth = getAuth(req)
   if (!auth.ok) return errResponse('unauthorized', 'Token inválido o ausente')
+
+  revokeToken(auth.user.jti, Date.now() + 60 * 60 * 1000)
 
   let body: Record<string, unknown> = {}
   try {

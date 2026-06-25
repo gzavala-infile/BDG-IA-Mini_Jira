@@ -40,7 +40,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   // Cargar comentarios con autor
   const { data: comentariosRaw } = await supabase
     .from('comentarios')
-    .select('id, texto, ticket_id, autor_id, creado_en, autor:autor_id(id, nombre, email, rol, activo, creado_en, actualizado_en)')
+    .select('id, texto, ticket_id, autor_id, creado_en, autor:autor_id(id, nombre, email, rol, activo)')
     .eq('ticket_id', ticketId)
     .order('creado_en', { ascending: true })
 
@@ -128,7 +128,8 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
   })
 
   if (rpcError) {
-    return errResponse('validation', rpcError.message)
+    console.error('[supabase error]', rpcError.message)
+    return errResponse('validation', 'Error al procesar la solicitud')
   }
 
   if (rpcResult === 'not_found') return errResponse('not_found', 'Ticket no encontrado')

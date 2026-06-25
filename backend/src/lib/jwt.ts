@@ -1,14 +1,19 @@
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 
-const ACCESS_SECRET = process.env['JWT_SECRET'] ?? 'dev-secret'
-const REFRESH_SECRET = process.env['JWT_REFRESH_SECRET'] ?? 'dev-refresh-secret'
+const _accessSecret = process.env['JWT_SECRET']
+const _refreshSecret = process.env['JWT_REFRESH_SECRET']
+if (!_accessSecret || !_refreshSecret) {
+  throw new Error('JWT_SECRET and JWT_REFRESH_SECRET environment variables are required')
+}
+const ACCESS_SECRET: string = _accessSecret
+const REFRESH_SECRET: string = _refreshSecret
 
-export type AccessPayload = { userId: string; rol: 'admin' | 'usuario' }
+export type AccessPayload = { userId: string; rol: 'admin' | 'usuario'; jti: string }
 export type RefreshPayload = { userId: string }
 
 export function signAccess(userId: string, rol: string): string {
-  return jwt.sign({ userId, rol }, ACCESS_SECRET, {
+  return jwt.sign({ userId, rol, jti: crypto.randomUUID() }, ACCESS_SECRET, {
     expiresIn: '1h',
   } as jwt.SignOptions)
 }

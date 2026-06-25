@@ -12,6 +12,7 @@ type RouteParams = { params: { ticketId: string } }
 export async function GET(req: NextRequest, { params }: RouteParams) {
   const auth = getAuth(req)
   if (!auth.ok) return errResponse('unauthorized', 'Token inválido o ausente')
+  if (auth.user.rol !== 'admin') return errResponse('forbidden', 'Acceso restringido a administradores')
 
   const ticketId = Number(params.ticketId)
   if (!Number.isInteger(ticketId)) return errResponse('not_found', 'Ticket no encontrado')
@@ -31,7 +32,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     .eq('ticket_id', ticketId)
     .order('creado_en', { ascending: true })
 
-  if (error) return errResponse('validation', error.message)
+  if (error) {
+    console.error('[supabase error]', error.message)
+    return errResponse('validation', 'Error al procesar la solicitud')
+  }
 
   const rows = (data ?? []).map((entry) => {
     const e = entry as unknown as AuditLogWithUser & { usuario: UsuarioPublico | null }

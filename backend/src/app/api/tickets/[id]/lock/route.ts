@@ -58,9 +58,9 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       // Active lock held by someone else — return 409 with locker info
       const { data: lockerRaw } = await supabase
         .from('usuarios')
-        .select('id, nombre, email, rol, activo, creado_en, actualizado_en')
+        .select('id, nombre, email, rol, activo')
         .eq('id', existing.locked_by)
-        .single<UsuarioPublico>()
+        .single<Pick<UsuarioPublico, 'id' | 'nombre' | 'email' | 'rol' | 'activo'>>()
 
       return NextResponse.json(
         {
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       .from('ticket_locks')
       .update({ locked_by: auth.user.userId, locked_at: now.toISOString(), expires_at: expiresAt })
       .eq('ticket_id', ticketId)
-      .select('ticket_id, locked_by, locked_at, expires_at, usuario:locked_by(id, nombre, email, rol, activo, creado_en, actualizado_en)')
+      .select('ticket_id, locked_by, locked_at, expires_at, usuario:locked_by(id, nombre, email, rol, activo)')
       .single<TicketLockWithUser>()
 
     if (!renewed) return errResponse('validation', 'Error al renovar el lock')
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   const { data: created } = await supabase
     .from('ticket_locks')
     .insert({ ticket_id: ticketId, locked_by: auth.user.userId, expires_at: expiresAt })
-    .select('ticket_id, locked_by, locked_at, expires_at, usuario:locked_by(id, nombre, email, rol, activo, creado_en, actualizado_en)')
+    .select('ticket_id, locked_by, locked_at, expires_at, usuario:locked_by(id, nombre, email, rol, activo)')
     .single<TicketLockWithUser>()
 
   if (!created) return errResponse('validation', 'Error al crear el lock')
