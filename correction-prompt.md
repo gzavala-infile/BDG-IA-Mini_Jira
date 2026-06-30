@@ -23,7 +23,7 @@ if (!ACCESS_SECRET || !REFRESH_SECRET) {
 }
 ```
 
-**Verificación:** El servidor no debe arrancar si las variables no están definidas. Asegúrate de que `.env.example` ya las documenta (ya lo hace).
+**Verificación:** El servidor no debe arrancar si las variables no están definidas. Asegúrate de que `.example.env` ya las documenta (ya lo hace).
 
 ---
 
@@ -301,7 +301,7 @@ if (!FRONTEND_ORIGIN) {
 }
 ```
 
-Actualiza `.env.example` para documentar `FRONTEND_ORIGIN` como variable requerida (renombrar de `FRONTEND_URL` a `FRONTEND_ORIGIN`).
+Actualiza `.example.env` para documentar `FRONTEND_ORIGIN` como variable requerida (renombrar de `FRONTEND_URL` a `FRONTEND_ORIGIN`).
 
 ---
 
