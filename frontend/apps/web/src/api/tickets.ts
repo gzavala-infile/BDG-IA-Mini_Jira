@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
-import type { Ticket } from '@mini-jira/shared';
+import type { Ticket, Comentario } from '@mini-jira/shared';
 import type { TicketCreateInput, TicketUpdateInput } from '@mini-jira/shared';
+
+export type TicketDetail = Ticket & { comentarios: Comentario[] };
 
 export interface TicketFilters {
   estado?: string[];
@@ -38,7 +40,7 @@ export function useTickets(filters: TicketFilters = {}) {
 export function useTicket(id: number) {
   return useQuery({
     queryKey: ['ticket', id],
-    queryFn: () => apiFetch<Ticket>(`/tickets/${id}`),
+    queryFn: () => apiFetch<TicketDetail>(`/tickets/${id}`),
     enabled: id > 0,
   });
 }
@@ -51,14 +53,59 @@ export function useCreateTicket() {
   });
 }
 
+function applyPatch(ticket: Ticket, patch: TicketUpdateInput): Ticket {
+  return {
+    ...ticket,
+    ...(patch.titulo !== undefined && { titulo: patch.titulo }),
+    ...(patch.descripcion !== undefined && { descripcion: patch.descripcion }),
+    ...(patch.estado !== undefined && { estado: patch.estado }),
+    ...(patch.prioridad !== undefined && { prioridad: patch.prioridad }),
+    ...(patch.etiquetas !== undefined && {
+      etiquetas: patch.etiquetas.map((nombre, i) => ({ id: -(i + 1), nombre })),
+    }),
+    version: patch.version,
+  };
+}
+
 export function useUpdateTicket() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }: { id: number; data: TicketUpdateInput }) =>
       apiFetch<Ticket>(`/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-    onSuccess: (t) => {
+
+    onMutate: async ({ id, data }) => {
+      await qc.cancelQueries({ queryKey: ['tickets'] });
+      await qc.cancelQueries({ queryKey: ['ticket', id] });
+
+      const previousLists = qc.getQueriesData<Ticket[]>({ queryKey: ['tickets'] });
+      const previousDetail = qc.getQueryData<TicketDetail>(['ticket', id]);
+
+      qc.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (old) =>
+        old?.map((t) => (t.id === id ? applyPatch(t, data) : t))
+      );
+      if (previousDetail) {
+        qc.setQueryData<TicketDetail>(['ticket', id], { ...previousDetail, ...applyPatch(previousDetail, data) });
+      }
+
+      return { previousLists, previousDetail };
+    },
+
+    onError: (_err, { id }, context) => {
+      context?.previousLists.forEach(([queryKey, data]) => qc.setQueryData(queryKey, data));
+      if (context?.previousDetail) {
+        qc.setQueryData(['ticket', id], context.previousDetail);
+      }
+    },
+
+    onSuccess: (ticket) => {
+      qc.setQueryData<TicketDetail>(['ticket', ticket.id], (old) =>
+        old ? { ...old, ...ticket } : { ...ticket, comentarios: [] }
+      );
+    },
+
+    onSettled: (_data, _err, { id }) => {
       qc.invalidateQueries({ queryKey: ['tickets'] });
-      qc.setQueryData(['ticket', t.id], t);
+      qc.invalidateQueries({ queryKey: ['ticket', id] });
     },
   });
 }
@@ -66,7 +113,8 @@ export function useUpdateTicket() {
 export function useArchiveTicket() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => apiFetch<Ticket>(`/tickets/${id}/archive`, { method: 'PATCH' }),
+    mutationFn: (id: number) =>
+      apiFetch<Ticket>(`/tickets/${id}/archive`, { method: 'PATCH', body: JSON.stringify({}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tickets'] }),
   });
 }
@@ -74,7 +122,8 @@ export function useArchiveTicket() {
 export function useRestoreTicket() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => apiFetch<Ticket>(`/tickets/${id}/restore`, { method: 'PATCH' }),
+    mutationFn: (id: number) =>
+      apiFetch<Ticket>(`/tickets/${id}/restore`, { method: 'PATCH', body: JSON.stringify({}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tickets'] }),
   });
 }
