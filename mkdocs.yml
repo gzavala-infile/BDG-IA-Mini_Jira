@@ -1,0 +1,9 @@
+site_name: Mini Jira — Documentación Técnica
+theme:
+  name: material
+nav:
+  - Inicio: index.md
+  - API Reference: api-reference.md
+  - Diagramas: diagramas.md
+  - Cobertura de Tests: cobertura-tests.md
+  - Base de Datos: base-de-datos.md

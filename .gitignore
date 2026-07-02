@@ -6,3 +6,5 @@ dist
 .turbo
 *.log
 **/node_modules/
+.mkdocs-venv/
+site/
